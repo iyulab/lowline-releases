@@ -1,6 +1,6 @@
 # Lowline — Downloads
 
-Lowline is a free, local-first form editor for Windows. You write the forms you fill in again and again as plain notes; each filled-in form is a file in a folder you choose. As you confirm entries, it learns to suggest the fields that call for judgment — and you always make the final choice.
+Lowline is a free, local-first form editor for Windows. You write the forms you fill in again and again as plain notes; each filled-in form is a file in a folder you choose. It is being built to learn from the entries you confirm and suggest the fields that call for judgment — you always make the final choice.
 
 ## Download
 
