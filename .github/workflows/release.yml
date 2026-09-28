@@ -1,0 +1,98 @@
+# Builds the Lowline installer and, optionally, drafts a release with it. Run by hand only.
+#
+# Not yet part of this pipeline, and required before a release is published:
+#   - code signing of the program, the installer and its uninstaller
+#   - update signing (updater key) and the update manifest (latest.json)
+#   - third-party license notices bundled with the installer
+# A draft release is visible to maintainers only; publishing it is a separate, manual step.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Source ref to build
+        default: main
+      draft-release:
+        description: Create a draft GitHub Release from the installer
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: iyulab/lowline
+          ref: ${{ inputs.ref }}
+          path: src
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src/src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content src/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        working-directory: src
+        run: |
+          npm ci
+          npm test
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build installer
+        working-directory: src
+        run: npx tauri build --bundles nsis
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lowline-setup
+          path: src/src-tauri/target/release/bundle/nsis/*.exe
+          retention-days: 1
+
+  draft-release:
+    if: ${{ inputs.draft-release }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lowline-setup
+          path: dist
+      - uses: geekyeggo/delete-artifact@v5
+        with:
+          name: lowline-setup
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --draft \
+            --title "Lowline $VERSION" --notes "Lowline $VERSION for Windows (x64)."
