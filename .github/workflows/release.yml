@@ -40,7 +40,7 @@ jobs:
           cache: npm
           cache-dependency-path: src/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - uses: actions/cache@v4
         with:
@@ -86,7 +86,7 @@ jobs:
         with:
           name: lowline-setup
           path: dist
-      - uses: geekyeggo/delete-artifact@v5
+      - uses: geekyeggo/delete-artifact@f275313e70c08f6120db482d7a6b98377786765b # v5
         with:
           name: lowline-setup
       - name: Create draft release
