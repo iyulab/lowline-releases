@@ -71,6 +71,14 @@ jobs:
           npm run build:host
           cargo test --manifest-path src-tauri/Cargo.toml
 
+      # The app's end-to-end scenarios on this runner, before an installer is made from the source:
+      # a sidecar that cannot open its cache, say, only shows once the real app runs.
+      - name: End-to-end scenarios
+        working-directory: src
+        run: |
+          npm run build:e2e
+          npm run test:e2e
+
       - name: Build installer
         working-directory: src
         env:
