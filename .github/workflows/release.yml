@@ -24,6 +24,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 45
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -96,6 +97,7 @@ jobs:
     if: ${{ inputs.draft-release }}
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
