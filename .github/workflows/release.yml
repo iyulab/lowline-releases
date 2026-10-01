@@ -195,7 +195,7 @@ jobs:
               platforms: {"windows-x86_64": {signature: $sig, url: $url}}}' > dist/latest.json
           # A draft of the same version is replaced; a published one is left alone and the step fails.
           if [ "$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null)" = "true" ]; then
-            gh release delete "v$VERSION" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            gh release delete "v$VERSION" --repo "$GITHUB_REPOSITORY" --yes
           fi
           gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --draft \
             --title "Lowline $VERSION" --notes "Lowline $VERSION for Windows (x64)."
