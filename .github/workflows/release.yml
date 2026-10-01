@@ -127,27 +127,30 @@ jobs:
         shell: pwsh
         run: if (Test-Path "$env:RUNNER_TEMP/sign-output.txt") { Get-Content "$env:RUNNER_TEMP/sign-output.txt" } else { 'the sign hook wrote nothing' }
 
-      # A signature that is not there is not caught by anything else: Windows still runs the app.
+      # A signature that is not there is not caught by anything else: Windows still runs the app. The
+      # bundler signs the app's copy that goes into the installer and puts the build output back as it
+      # was, so the installed programs are checked under "Check installer"; here, what is on disk.
       - name: Check signatures
         working-directory: src
         shell: pwsh
         env:
           SIGNED_LOG: ${{ runner.temp }}/signed.txt
         run: |
-          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe) + @(Get-ChildItem src-tauri/target/release/*.exe) + @(Get-Item src-host/publish/Lowline.Host.exe)
-          $bad = $files | Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid' }
+          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe) + @(Get-Item src-host/publish/Lowline.Host.exe)
           $files | ForEach-Object { $sig = Get-AuthenticodeSignature $_.FullName; "{0}: {1} ({2})" -f $_.Name, $sig.Status, $sig.SignerCertificate.Subject }
+          $bad = $files | Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid' }
           if ($bad) { throw "not signed: $($bad.Name -join ', ')" }
-          # App, uninstaller and installer go through the sign hook; the uninstaller is only seen there.
           $hooked = @(Get-Content $env:SIGNED_LOG)
           "sign hook: $($hooked -join ', ')"
-          if ($hooked.Count -lt 3) { throw "the sign hook signed $($hooked.Count) file(s); expected the app, its uninstaller and the installer" }
+          if ($hooked -notcontains 'lowline.exe') { throw 'the sign hook never signed the app' }
 
       # The installer the way a person gets the app: installed for this user, started with its sidecar from
       # the installed folder, closed (taking the sidecar with it), uninstalled. A fresh runner has no Lowline
       # of its own, so the installed app's real identifier touches nothing.
       - name: Check installer
         working-directory: src
+        env:
+          LOWLINE_EXPECT_SIGNED: '1'
         run: npm run check:installer
 
       - uses: actions/upload-artifact@v7
