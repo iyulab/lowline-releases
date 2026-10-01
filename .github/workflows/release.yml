@@ -87,6 +87,13 @@ jobs:
           LOWLINE_APPINSIGHTS_CONNECTION_STRING: ${{ secrets.LOWLINE_APPINSIGHTS_CONNECTION_STRING }}
         run: npx tauri build --bundles nsis
 
+      # The installer the way a person gets the app: installed for this user, started with its sidecar from
+      # the installed folder, closed (taking the sidecar with it), uninstalled. A fresh runner has no Lowline
+      # of its own, so the installed app's real identifier touches nothing.
+      - name: Check installer
+        working-directory: src
+        run: npm run check:installer
+
       - uses: actions/upload-artifact@v7
         with:
           name: lowline-setup
