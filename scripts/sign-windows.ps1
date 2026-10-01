@@ -10,14 +10,15 @@
 # TODO(upstream): iyulab/code-sign signs a list of files in one step but has no entry point a build
 # tool's sign hook can call per file; the Key Vault values below mirror its action defaults.
 $ErrorActionPreference = 'Stop'
-
 $file = $args[0]
+trap { if ($env:SIGN_OUTPUT) { Add-Content -Path $env:SIGN_OUTPUT -Value "== ${file}: $_" }; break }
 if (-not $file) { throw 'sign-windows.ps1: no file path given' }
 
 $token = az account get-access-token --resource https://vault.azure.net --query accessToken -o tsv
 if ($LASTEXITCODE -ne 0 -or -not $token) { throw 'sign-windows.ps1: no Key Vault access token (is the job logged in to Azure?)' }
 
-AzureSignTool sign `
+# Tauri keeps a failing sign command's output to itself: write it where the job can show it.
+$output = AzureSignTool sign `
     --description Lowline `
     --description-url https://github.com/iyulab/lowline `
     --azure-key-vault-url https://kv-codesign-iyulab.vault.azure.net/ `
@@ -26,8 +27,11 @@ AzureSignTool sign `
     --timestamp-rfc3161 http://timestamp.globalsign.com/tsa/r6advanced1 `
     --timestamp-digest sha256 `
     --file-digest sha256 `
-    $file
-if ($LASTEXITCODE -ne 0) { throw "sign-windows.ps1: AzureSignTool failed with exit code $LASTEXITCODE for $file" }
+    $file 2>&1
+$code = $LASTEXITCODE
+if ($env:SIGN_OUTPUT) { Add-Content -Path $env:SIGN_OUTPUT -Value (@("== $file (exit $code)") + @($output | ForEach-Object { "$_" })) }
+$output | ForEach-Object { "$_" }
+if ($code -ne 0) { throw "sign-windows.ps1: AzureSignTool failed with exit code $code for $file" }
 
 # The release job checks that every file it expected to be signed went through here.
 if ($env:SIGNED_LOG) { Add-Content -Path $env:SIGNED_LOG -Value ([IO.Path]::GetFileName($file)) }

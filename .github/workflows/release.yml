@@ -105,6 +105,7 @@ jobs:
         shell: pwsh
         env:
           SIGNED_LOG: ${{ runner.temp }}/signed.txt
+          SIGN_OUTPUT: ${{ runner.temp }}/sign-output.txt
         run: |
           $sign = @{ bundle = @{ windows = @{ signCommand = @{
             cmd = 'pwsh'
@@ -112,8 +113,13 @@ jobs:
           } } } }
           $config = Join-Path $env:RUNNER_TEMP 'sign.json'
           $sign | ConvertTo-Json -Depth 6 | Set-Content -Path $config -Encoding utf8
-          npx tauri bundle --bundles nsis --config $config
+          npx tauri bundle --verbose --bundles nsis --config $config
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Show sign hook output
+        if: failure()
+        shell: pwsh
+        run: if (Test-Path "$env:RUNNER_TEMP/sign-output.txt") { Get-Content "$env:RUNNER_TEMP/sign-output.txt" } else { 'the sign hook wrote nothing' }
 
       # A signature that is not there is not caught by anything else: Windows still runs the app.
       - name: Check signatures
