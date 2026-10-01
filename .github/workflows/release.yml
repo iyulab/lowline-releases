@@ -120,6 +120,8 @@ jobs:
             cmd = 'pwsh'
             args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$env:GITHUB_WORKSPACE/release/scripts/sign-windows.ps1", '%1')
           } } } }
+          # The cached target folder can hold an earlier run's installers; only this run's may be checked and uploaded.
+          Remove-Item -Recurse -Force src-tauri/target/release/bundle -ErrorAction SilentlyContinue
           $config = Join-Path $env:RUNNER_TEMP 'sign.json'
           $sign | ConvertTo-Json -Depth 6 | Set-Content -Path $config -Encoding utf8
           npx tauri bundle --verbose --bundles nsis --config $config
