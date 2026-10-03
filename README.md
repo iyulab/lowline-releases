@@ -9,8 +9,9 @@ Lowline is a free, local-first form editor for Windows. You write the forms you 
 
 ## Download
 
-No release has been published yet. When one is, it will be at
-[Latest release](https://github.com/iyulab/lowline-releases/releases/latest) — `Lowline_<version>_x64-setup.exe`.
+Download `Lowline_<version>_x64-setup.exe` from the
+[latest release](https://github.com/iyulab/lowline-releases/releases/latest) and run it. Once installed,
+Lowline tells you when a newer release is out and installs it when you choose to.
 
 ## System requirements
 
