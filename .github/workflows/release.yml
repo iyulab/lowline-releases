@@ -82,6 +82,8 @@ jobs:
           npm test
           npm run test:host
           npm run build:host
+          # The notices the installer ships, failing on any package left without its license text.
+          npm run notices -- --strict
           cargo test --manifest-path src-tauri/Cargo.toml
 
       # The app's end-to-end scenarios on this runner, before an installer is made from the source:
