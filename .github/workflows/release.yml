@@ -146,12 +146,14 @@ jobs:
           }
 
       # The installer the way a person gets the app: installed for this user, started with its sidecar from
-      # the installed folder, closed (taking the sidecar with it), uninstalled. A fresh runner has no Lowline
-      # of its own, so the installed app's real identifier touches nothing.
+      # the installed folder, closed (taking the sidecar with it), uninstalled. Then the way a person updates:
+      # the latest published release installed, its sidecar's caches written, this installer installed over
+      # it, and the caches read again. The token lets gh fetch the published installer.
       - name: Check installer
         working-directory: src
         env:
           LOWLINE_EXPECT_SIGNED: '1'
+          GH_TOKEN: ${{ github.token }}
         run: npm run check:installer
 
       - uses: actions/upload-artifact@v7
