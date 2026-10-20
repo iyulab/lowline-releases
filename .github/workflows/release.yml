@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          repository: iyulab/lowline
+          repository: iyulab/lowline-desktop
           ref: ${{ inputs.ref }}
           path: src
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -103,7 +103,7 @@ jobs:
         uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce # main, pinned
         with:
           description: Lowline
-          description-url: https://github.com/iyulab/lowline
+          description-url: https://github.com/iyulab/lowline-desktop
 
       - name: Build installer
         working-directory: src
