@@ -80,7 +80,10 @@ jobs:
           "version=$($conf.version)" >> $env:GITHUB_OUTPUT
           "pubkey=$($conf.plugins.updater.pubkey)" >> $env:GITHUB_OUTPUT
           # The bundler and the updater signature use the Tauri CLI the source builds with.
-          $cli = (Get-Content src/package-lock.json -Raw | ConvertFrom-Json).packages.'node_modules/@tauri-apps/cli'.version
+          # A hashtable: the lock file names its root package with an empty key, which an object cannot hold.
+          $lock = Get-Content src/package-lock.json -Raw | ConvertFrom-Json -AsHashtable
+          $cli = $lock.packages['node_modules/@tauri-apps/cli'].version
+          if (-not $cli) { throw 'package-lock.json has no @tauri-apps/cli' }
           "tauri-cli=@tauri-apps/cli@$cli" >> $env:GITHUB_OUTPUT
           # The reusable workflow is called with `with:`, which cannot read `env` — hand it the list as an output.
           "sign-binaries<<EOF" >> $env:GITHUB_OUTPUT
