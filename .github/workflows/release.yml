@@ -1,10 +1,21 @@
 # Builds the Lowline installer, signed, and optionally drafts a release with it. Run by hand only.
 #
-# Signed with the iyulab code signing certificate by Tauri's sign hook (the iyulab/code-sign action's
-# code-sign-file.cmd): the app, the sidecar it ships as a resource, its uninstaller and the installer. The installer
-# ships the third-party license notices, and the release carries the installer's update signature and the
-# update manifest (latest.json) the app reads from the latest release.
-# A draft release is visible to maintainers only; publishing it is a separate, manual step.
+# The build runs here, without any credential. Signing, bundling, the installed copy's signature check, the update
+# signature and the draft are iyulab/tauri-release's reusable Windows workflow (pinned to a commit): it signs exactly
+# the files in SIGN_BINARIES, bundles twice so the uninstaller and the NSIS plugins are signed too, signs the installer,
+# installs it and checks every installed program's signature, signs the installer for the app's updater and writes the
+# update manifest (latest.json) the app reads from the latest release, and drafts the release. Only its signing jobs
+# hold the signing credential — they are iyulab/code-sign's reusable workflow, which declares this repository's
+# `production` environment (the subject of its Azure federated credential) and runs nothing of this repository; the
+# updater key reaches its updater job only.
+#
+#   build (no credential) → previous-draft (a draft of the same version removed) → release: sign-binaries → bundle ×2 → sign-installer → verify → updater → draft
+#   → check-installer: installed, started, closed, uninstalled; then installed over the latest published release
+#
+# A draft release is visible to maintainers only; publishing it is a separate, manual step. A draft whose installer
+# fails the install check is deleted again.
+#
+# Every action is pinned to a commit; the tag it was taken from is in the trailing comment.
 name: release
 
 on:
@@ -18,56 +29,63 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
+permissions: {}
+
+env:
+  # The programs that go into the installer and are signed by us, relative to the source root. The build fails if
+  # the built programs are another set — update this list with a deliberate review.
+  SIGN_BINARIES: |
+    src-tauri/target/release/lowline.exe
+    src-host/publish/Lowline.Host.exe
 
 jobs:
+  # 1) Test the source and build the app and its sidecar, unsigned. No signing credential here.
   build:
-    runs-on: windows-latest
+    runs-on: windows-latest        # the app, its sidecar and their end-to-end scenarios are Windows builds
     timeout-minutes: 45
-    # The code signing certificate is reached through an Azure federated credential bound to this
-    # environment; the job's OIDC token carries it.
-    environment: production
     permissions:
       contents: read
-      id-token: write
     outputs:
       version: ${{ steps.version.outputs.version }}
+      pubkey: ${{ steps.version.outputs.pubkey }}
+      tauri-cli: ${{ steps.version.outputs.tauri-cli }}
+      sign-binaries: ${{ steps.version.outputs.sign-binaries }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: iyulab/lowline-desktop
           ref: ${{ inputs.ref }}
           path: src
           token: ${{ secrets.RELEASE_TOKEN }}
+          persist-credentials: false   # the token is needed only to fetch; later steps must not read it
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: src/package-lock.json
 
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
 
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - uses: actions/cache@v6
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            src/src-tauri/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src/src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          toolchain: stable
+
+      # No cache: releases are weeks apart, and GitHub drops a cache not read for seven days.
 
       - id: version
         shell: pwsh
         run: |
-          $v = (Get-Content src/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          "version=$v" >> $env:GITHUB_OUTPUT
+          $conf = Get-Content src/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          "version=$($conf.version)" >> $env:GITHUB_OUTPUT
+          "pubkey=$($conf.plugins.updater.pubkey)" >> $env:GITHUB_OUTPUT
+          # The bundler and the updater signature use the Tauri CLI the source builds with.
+          $cli = (Get-Content src/package-lock.json -Raw | ConvertFrom-Json).packages.'node_modules/@tauri-apps/cli'.version
+          "tauri-cli=@tauri-apps/cli@$cli" >> $env:GITHUB_OUTPUT
+          # The reusable workflow is called with `with:`, which cannot read `env` — hand it the list as an output.
+          "sign-binaries<<EOF" >> $env:GITHUB_OUTPUT
+          @($env:SIGN_BINARIES -split "`n" | ForEach-Object Trim | Where-Object { $_ }) >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Test
         working-directory: src
@@ -95,105 +113,156 @@ jobs:
           LOWLINE_APPINSIGHTS_CONNECTION_STRING: ${{ secrets.LOWLINE_APPINSIGHTS_CONNECTION_STRING }}
         run: npx tauri build --no-bundle
 
-      # Prepares the job for the sign hook below: code-sign-file.cmd on PATH, which signs one file, and
-      # CODE_SIGN_LOG, which every signing appends to. The bundler calls the hook for the programs it packs,
-      # the sidecar among its resources too. The action's Azure session lasts about an hour, so it runs
-      # right before the bundling.
-      - name: Prepare signing
-        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce # main, pinned
-        with:
-          description: Lowline
-          description-url: https://github.com/iyulab/lowline-desktop
-
-      - name: Build installer
-        working-directory: src
-        shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          # The update signature (.sig) is made over the installer after the sign hook signed it.
-          $sign = @{ bundle = @{ createUpdaterArtifacts = $true; windows = @{ signCommand = 'code-sign-file.cmd %1' } } }
-          # The cached target folder can hold an earlier run's installers; only this run's may be checked and uploaded.
-          Remove-Item -Recurse -Force src-tauri/target/release/bundle -ErrorAction SilentlyContinue
-          $config = Join-Path $env:RUNNER_TEMP 'sign.json'
-          $sign | ConvertTo-Json -Depth 6 | Set-Content -Path $config -Encoding utf8
-          npx tauri bundle --verbose --bundles nsis --config $config
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      # A sign hook keeps a failing command's output to itself: the log holds it.
-      - name: Show sign log
-        if: failure()
-        shell: pwsh
-        run: if ($env:CODE_SIGN_LOG -and (Test-Path $env:CODE_SIGN_LOG)) { Get-Content $env:CODE_SIGN_LOG } else { 'nothing was signed' }
-
-      # A signature that is not there is not caught by anything else: Windows still runs the app. The
-      # bundler signs the copies of the programs that go into the installer and puts the build output back
-      # as it was, so the installed programs are checked under "Check installer"; here, the installer on
-      # disk and what the hook signed.
-      - name: Check signatures
-        working-directory: src
+      # Hand the signing job exactly the programs to sign, and bundling what it reads: the app's sources (tracked
+      # files only), the built app, the published sidecar and the notices.
+      - name: Stage for signing and bundling
         shell: pwsh
         run: |
-          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe)
-          $files | ForEach-Object { $sig = Get-AuthenticodeSignature $_.FullName; "{0}: {1} ({2})" -f $_.Name, $sig.Status, $sig.SignerCertificate.Subject }
-          $bad = $files | Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid' }
-          if ($bad) { throw "not signed: $($bad.Name -join ', ')" }
-          $signed = @(Select-String -Path $env:CODE_SIGN_LOG -Pattern '^== (.+): signed$' | ForEach-Object { Split-Path -Leaf $_.Matches[0].Groups[1].Value })
-          "signed: $($signed -join ', ')"
-          foreach ($program in 'lowline.exe', 'Lowline.Host.exe') {
-            if ($signed -notcontains $program) { throw "the sign hook never signed $program" }
+          $src = (Resolve-Path src).Path
+          $expected = @($env:SIGN_BINARIES -split "`n" | ForEach-Object Trim | Where-Object { $_ }) | Sort-Object
+          $built = @(
+            'src-tauri/target/release/lowline.exe'
+            Get-ChildItem -Recurse -File src/src-host/publish | Where-Object Extension -in '.exe', '.dll' |
+              ForEach-Object { [IO.Path]::GetRelativePath($src, $_.FullName).Replace('\', '/') }
+          ) | Sort-Object
+          $diff = Compare-Object $expected $built
+          if ($diff) { throw "The build made other programs to sign than SIGN_BINARIES:`n$($diff | Out-String)" }
+
+          $unsigned = Join-Path $env:RUNNER_TEMP 'unsigned-binaries'
+          foreach ($f in $expected) {
+            $to = Join-Path $unsigned $f
+            New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+            Copy-Item (Join-Path $src $f) $to
           }
 
-      # The installer the way a person gets the app: installed for this user, started with its sidecar from
-      # the installed folder, closed (taking the sidecar with it), uninstalled. Then the way a person updates:
-      # the latest published release installed, its sidecar's caches written, this installer installed over
-      # it, and the caches read again. The token lets gh fetch the published installer.
-      - name: Check installer
-        working-directory: src
-        env:
-          LOWLINE_EXPECT_SIGNED: '1'
-          GH_TOKEN: ${{ github.token }}
-        run: npm run check:installer
+          $bundleIn = Join-Path $env:RUNNER_TEMP 'bundle-input'
+          New-Item -ItemType Directory -Force $bundleIn | Out-Null
+          $tar = Join-Path $env:RUNNER_TEMP 'source.tar'
+          git -C src archive --format=tar -o $tar HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
+          tar -xf $tar -C $bundleIn
+          if ($LASTEXITCODE -ne 0) { throw 'tar failed' }
+          New-Item -ItemType Directory -Force (Join-Path $bundleIn 'src-tauri/target/release'), (Join-Path $bundleIn 'notices/out') | Out-Null
+          Copy-Item src/src-tauri/target/release/lowline.exe (Join-Path $bundleIn 'src-tauri/target/release')
+          Copy-Item src/src-host/publish (Join-Path $bundleIn 'src-host') -Recurse -Force
+          Copy-Item src/notices/out/THIRD-PARTY-NOTICES.txt (Join-Path $bundleIn 'notices/out')
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: lowline-setup
-          path: |
-            src/src-tauri/target/release/bundle/nsis/*.exe
-            src/src-tauri/target/release/bundle/nsis/*.exe.sig
+          name: unsigned-binaries
+          path: ${{ runner.temp }}/unsigned-binaries
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundle-input
+          path: ${{ runner.temp }}/bundle-input
+          if-no-files-found: error
           retention-days: 1
 
-  draft-release:
-    if: ${{ inputs.draft-release }}
+  # A draft of the same version is replaced; a published one is left alone, and the draft job then fails.
+  previous-draft:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - if: ${{ inputs.draft-release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.build.outputs.version }}
+        run: |
+          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null)" = "true" ]; then
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi
+
+  # 2) Sign, bundle, check, sign for the updater and draft — tauri-release, with signing in code-sign's jobs only.
+  release:
+    needs: [build, previous-draft]
+    uses: iyulab/tauri-release/.github/workflows/windows.yml@28f0a5f02fe3409e97b2d9f7faab923e2c25faab # main
+    permissions:
+      id-token: write      # its three signing jobs
+      contents: write      # its draft job, only with draft-release
+    with:
+      unsigned-artifact: unsigned-binaries
+      files: ${{ needs.build.outputs.sign-binaries }}
+      bundle-artifact: bundle-input
+      app-dir: src-tauri
+      tauri-cli: ${{ needs.build.outputs.tauri-cli }}
+      description: Lowline
+      description-url: https://github.com/iyulab/lowline-desktop
+      installer-artifact: lowline-setup
+      draft: ${{ inputs.draft-release }}
+      tag: v${{ needs.build.outputs.version }}
+      title: Lowline ${{ needs.build.outputs.version }}
+      notes: Lowline ${{ needs.build.outputs.version }} for Windows (x64).
+      updater: true
+      version: ${{ needs.build.outputs.version }}
+      updater-pubkey: ${{ needs.build.outputs.pubkey }}
+    secrets:
+      updater-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      updater-key-password: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+  # 3) The installer the way a person gets the app: installed for this user, started with its sidecar from the
+  # installed folder, closed (taking the sidecar with it), uninstalled. Then the way a person updates: the latest
+  # published release installed, its sidecar's caches written, this installer installed over it, and the caches read
+  # again. The token lets gh fetch the published installer.
+  check-installer:
+    needs: [build, release]
+    runs-on: windows-latest        # installs and runs the Windows app
+    timeout-minutes: 20
+    permissions:
+      contents: write      # to take back the draft of an installer that failed here
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: iyulab/lowline-desktop
+          ref: ${{ inputs.ref }}
+          path: src
+          token: ${{ secrets.RELEASE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: lowline-setup
           path: dist
-      - uses: geekyeggo/delete-artifact@176a747ab7e287e3ff4787bf8a148716375ca118 # v6.0.0
-        with:
-          name: lowline-setup
-      - name: Create draft release
+      - name: Check installer
+        working-directory: src
+        shell: pwsh
+        env:
+          LOWLINE_EXPECT_SIGNED: '1'
+          GH_TOKEN: ${{ github.token }}
+          INSTALLER: ${{ needs.release.outputs.installer }}
+        run: |
+          npm ci
+          node scripts/check-installer.mjs (Join-Path $env:GITHUB_WORKSPACE "dist/$env:INSTALLER")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Take back the draft
+        if: ${{ failure() && inputs.draft-release }}
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.build.outputs.version }}
+          TAG: v${{ needs.build.outputs.version }}
         run: |
-          # The update manifest the app reads from the latest release: the installer and its update signature.
-          exe=$(cd dist && ls *-setup.exe)
-          jq -n --arg version "$VERSION" --arg sig "$(cat "dist/$exe.sig")" \
-            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$exe" \
-            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{version: $version, notes: ("Lowline " + $version), pub_date: $date,
-              platforms: {"windows-x86_64": {signature: $sig, url: $url}}}' > dist/latest.json
-          # A draft of the same version is replaced; a published one is left alone and the step fails.
-          if [ "$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null)" = "true" ]; then
-            gh release delete "v$VERSION" --repo "$GITHUB_REPOSITORY" --yes
+          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null)" = "true" ]; then
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
           fi
-          gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --draft \
-            --title "Lowline $VERSION" --notes "Lowline $VERSION for Windows (x64)."
+        shell: bash
+
+  # This run's own artifacts are not kept past it (tauri-release removes its own).
+  cleanup:
+    if: ${{ always() }}
+    needs: [build, previous-draft, release, check-installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: geekyeggo/delete-artifact@176a747ab7e287e3ff4787bf8a148716375ca118 # v6.0.0
+        with:
+          name: |
+            unsigned-binaries
+            bundle-input
+            lowline-setup
+          failOnError: false
